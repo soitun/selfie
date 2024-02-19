@@ -37,6 +37,7 @@ class DataSource(BaseModel):
     name = CharField()
     loader_module = CharField()
     config = TextField()
+    last_loaded_timestamp = CharField(null=True)
 
     class Meta:
         table_name = 'selfie_datasource'
@@ -114,8 +115,13 @@ class DataManager:
         changes = {}
         for source_id in source_ids:
             data_source = DataSource.get_by_id(source_id)
+
+            data_source_config = json.loads(data_source.config)
+            if data_source.loader_module.startswith("selfie"):
+                data_source_config["load_data_kwargs"]["earliest_date"] = data_source.last_loaded_timestamp
+
             documents = self._fetch_documents(
-                data_source.loader_module, json.loads(data_source.config)
+                data_source.loader_module, data_source_config
             )
             for doc in documents:
                 document, created = SelfieDocument.get_or_create(

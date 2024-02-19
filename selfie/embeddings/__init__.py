@@ -22,19 +22,22 @@ import logging
 
 from txtai.pipeline import LLM
 
+from selfie.types.completion_requests import SelfieCompletionResponse, CompletionRequest, ChatCompletionRequest
+import selfie.text_generation.generation as generation
+
 logger = logging.getLogger(__name__)
 
 default_importance = 0.3
 
 config = get_app_config()
 
-llm = LLM(
-    verbose=config.verbose,
-    path=config.local_model,
-    method="llama.cpp",
-    n_ctx=8192,
-    n_gpu_layers=-1 if config.gpu else 0,
-)
+# llm = LLM(
+#     verbose=config.verbose,
+#     path=config.local_model,
+#     method="llama.cpp",
+#     n_ctx=8192,
+#     n_gpu_layers=-1 if config.gpu else 0,
+# )
 
 
 class DataIndex:
@@ -45,18 +48,31 @@ class DataIndex:
             cls._singleton = super(DataIndex, cls).__new__(cls)
         return cls._singleton
 
-    def __init__(self, character_name, storage_path: str = config.embeddings_storage_root, use_local_llm=True, completion=None):
+    def __init__(self, filters: Dict[str, Any] = {}, storage_path: str = config.embeddings_storage_root, use_local_llm=True, completion=None):
         if not hasattr(self, 'is_initialized'):
             logger.info("Initializing DataIndex")
             self.storage_path = os.path.join(storage_path, "index")
             os.makedirs(storage_path, exist_ok=True)
 
             async def completion_async(prompt):
-                return llm(prompt)
+                req = ChatCompletionRequest(
+                    api_base="http://localhost:5000/v1",
+                    api_key="",
+                    max_tokens=512,
+                    disable_augmentation=True,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                )
+                return await generation.completion(req)
+                # return llm(prompt)
 
             self.completion = completion or completion_async
 
-            self.character_name = character_name
+            self.filters = filters
             self.embeddings = Embeddings(
                 path="sentence-transformers/all-MiniLM-L6-v2",
                 sqlite={"wal": True},
@@ -177,6 +193,14 @@ class DataIndex:
             documents.append(document)
         return documents
 
+    def _format_index_documents(self, documents: List[Document]):
+        return "\n\n".join(
+            [
+                f"{humanize.naturaltime(datetime.now(timezone.utc) - document.timestamp)}\n{document.text}"
+                for document in documents
+            ]
+        )
+
     @staticmethod
     def _calculate_retrieval_score(
         recency_score,
@@ -203,12 +227,7 @@ class DataIndex:
             model = "gpt-3.5-turbo"
         if len(documents) == 0:
             return None
-        document_summary = "\n\n".join(
-            [
-                f"{humanize.naturaltime(datetime.now(timezone.utc) - document.timestamp)}\n{document.text}"
-                for document in documents
-            ]
-        )
+        document_summary = self._format_index_documents(documents)
 
         if character_name:
             prompt = f'### Instruction:\nYou are {character_name}. Below are conversation fragments from your recent memories. You are gathering your thoughts in preparation of writing a response for "{context}". In a sentence, concisely tell yourself what you can conclude about this topic from your memories, especially as it relates to you personally.\n\n### Input:\nStart of memories:\n{document_summary}\nEnd of memories.\n\n### Concise response:\n{character_name}:\nBased on the given conversation fragments, it can be concluded that '
@@ -246,20 +265,25 @@ class DataIndex:
 
     def _query(
             self,
-            where: str = None,
+            where: str | List[str] = None,
             parameters: Dict[str, Any] = None,
             limit: int = None,
             offset: int = None,
             order_by: str = None,
             group_by: str = None,
+            filters: Dict[str, Any] = {},
     ) -> List[Dict[str, Any]]:
         parameters = parameters or {}
         query_components = [
             f"SELECT score, {', '.join(Document.model_fields.keys())} FROM txtai"
         ]
 
+        if self.filters:
+            where = ((where if isinstance(where, list) else [where])
+                     .extend([f'{k} = {v}' for k, v in {**self.filters, **filters}.items()]))
+
         if where:
-            query_components.append(f"WHERE {where}")
+            query_components.append(f"AND {' AND '.join(where)}")
 
         if group_by:
             query_components.append(f"GROUP BY {group_by}")
@@ -296,6 +320,56 @@ class DataIndex:
         return with_importance
         # TODO: return document with ID, if possible
 
+    async def accumulate_over(self, prompt: str, source_document_ids: Optional[List[int]] = None, earliest_date: Optional[datetime] = None, latest_date: Optional[datetime] = None):
+        chunk_size = 32000
+
+        if not self.has_data():
+            return None
+
+        async def get_formatted_index_docs(source_doc_id=None, offset=0, limit=10):
+            # TODO it seems like get_documents returns ordered by date descending??
+            index_docs = self.get_documents_with_source_document(source_doc_id) if source_doc_id else await self.get_documents(offset, limit)
+            return [self._format_index_documents([Document(**d)]) for d in index_docs if (earliest_date is None or d['created_timestamp'] >= earliest_date) and (latest_date is None or d['created_timestamp'] <= latest_date)]
+
+
+        async def complete(docs):
+            results = []
+            chunk = ""
+            count = 0
+            for doc in docs:
+                if len(chunk) + len(doc) > chunk_size:
+                    print(f"Prompting with {count} accumulated chunks out of {len(docs)}")
+                    completion_result = await self.completion(f"{prompt}:\n{chunk}")
+                    results.append(completion_result["choices"][0]["message"]["content"])
+                    chunk = doc
+                    count = 1
+                else:
+                    chunk += doc + "\n"
+                    count += 1
+            if chunk:
+                completion_result = await self.completion(f"{prompt}:\n{chunk}")
+                results.append(completion_result["choices"][0]["message"]["content"])
+
+            return "\n".join(results)
+
+        results = []
+        if source_document_ids:
+            for source_doc_id in source_document_ids:
+                docs = await get_formatted_index_docs(int(source_doc_id), limit=999999)
+                results.append(await complete(docs))
+        else:
+            offset, limit = 0, 500
+            while True:
+                docs = await get_formatted_index_docs(offset=offset, limit=limit)
+                if not docs:
+                    break
+                print(f"Processing {len(docs)} documents at offset {offset}")
+                results.append(await complete(docs))
+                offset += limit
+
+        return "\n".join(results)
+
+
     async def recall(
         self,
         topic: str,
@@ -308,6 +382,7 @@ class DataIndex:
         include_summary=True,
         local_llm=True,
         min_score=0.4,
+        document_ids: Optional[List[int]] = None,
     ):
         if min_score is None:
             min_score = 0.4
@@ -316,7 +391,12 @@ class DataIndex:
             return {"documents": [], "summary": "No documents found.", "mean_score": 0}
         self.embeddings.load(self.storage_path)
 
-        results = self._query(where="similar(:topic)", parameters={"topic": topic}, limit=limit)
+        where_clause = [
+            "similar(:topic)",
+            *([f"id IN ({', '.join([str(doc_id) for doc_id in document_ids])})"] if document_ids else [])
+        ]
+        results = self._query(where=where_clause, limit=limit)
+
         documents_list: List[ScoredDocument] = []
         for result in results:
             document = Document(
@@ -402,7 +482,9 @@ class DataIndex:
             return 0
 
         if source_document_ids:
-            return self.embeddings.search(f"SELECT count(*) FROM txtai WHERE source_document_id IN ({', '.join(source_document_ids)})")[0]["count(*)"]
+            filters = [f'{k} = {v}' for k, v in self.filters.items()]
+            filtered_where = f"{' AND '.join(filters)} AND" if filters else ""
+            return self.embeddings.search(f"SELECT count(*) FROM txtai WHERE {filtered_where} source_document_id IN ({', '.join(source_document_ids)})")[0]["count(*)"]
         else:
             return self.embeddings.count()
 
@@ -413,7 +495,7 @@ class DataIndex:
         return result[0] if result else None
 
     def get_documents_with_source_document(self, source_document_id):
-        return self._query(where="source_document_id = :source_document_id", parameters={"source_document_id": source_document_id}) if self.has_data() else []
+        return self._query(where="source_document_id = :source_document_id", parameters={"source_document_id": source_document_id}, limit=999999) if self.has_data() else []
 
     def get_one_document_per_source_document(self, source_document_ids: Optional[List[str]] = None):
         if not self.has_data():
@@ -436,7 +518,10 @@ class DataIndex:
         if not self.has_data():
             return None
         result = self._query(
-            where="text = :text AND timestamp = :timestamp AND source = :source AND source_document_id = :source_document_id",
+            where=["text = :text",
+                   "timestamp = :timestamp",
+                   "source = :source",
+                   "source_document_id = :source_document_id"],
             parameters={
                 "text": document.text,
                 "timestamp": document.timestamp.isoformat(),

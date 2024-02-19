@@ -15,8 +15,15 @@ class UnindexDocumentsRequest(BaseModel):
 
 
 class IndexDocumentsRequest(BaseModel):
+    name: str
     is_chat: bool = False
     document_ids: List[str] = []
+    strategy: Optional[str] = 'accumulate'
+
+
+class GenerateReportRequest(BaseModel):
+    prompt: str
+    document_ids: Optional[List[str]] = None
 
 
 @router.get("/documents")
@@ -68,3 +75,13 @@ async def index_documents(request: IndexDocumentsRequest):
 # async def delete_data_source(document_id: int):
 #     DataSourceManager().remove_document(document_id)
 #     return {"message": "Document removed successfully"}
+
+@router.post("/documents/generate-report")
+async def generate_report(request: GenerateReportRequest):
+    # For now, generate this document and return it
+
+    document_ids = request.document_ids
+
+    report = await DataIndex().accumulate_over(request.prompt, source_document_ids=document_ids)
+
+    return {"report": report}

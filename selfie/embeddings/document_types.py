@@ -31,6 +31,14 @@ class Document(BaseModel):
         values['updated_timestamp'] = datetime.utcnow()
         return values
 
+# class Report(Document):
+#     title: str = Field(..., description="Title of the report")
+#     description: Optional[str] = Field(None, description="Description of the report")
+#     category: str = Field(..., description="Category of the report")
+#     tags: Optional[str] = Field(None, description="Tags of the report")
+#
+#     class Config:
+#         validate_assignment = True
 
 class ScoredDocument(Document):
     score: float = Field(..., description="Overall score of the document, for a query, [0, 1]")

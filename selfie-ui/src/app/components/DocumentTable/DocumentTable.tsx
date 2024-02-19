@@ -16,6 +16,7 @@ interface DocumentTableProps {
   onUnindexDocument: (doc: Document) => void | Promise<void>;
   onIndexDocuments: () => void | Promise<void>;
   onUnindexDocuments: () => void | Promise<void>;
+  onGenerateReport: () => void | Promise<void>;
   disabled?: boolean;
   stats?: DocumentStats;
 }
@@ -31,6 +32,7 @@ const DocumentTable = ({
                          onUnindexDocument,
                          onIndexDocuments,
                          onUnindexDocuments,
+                         onGenerateReport,
                          disabled = false,
                          stats,
                        }: DocumentTableProps) => {
@@ -92,6 +94,7 @@ const DocumentTable = ({
       <DocumentTableActionBar
         onIndexDocuments={onIndexDocuments}
         onUnindexDocuments={onUnindexDocuments}
+        onGenerateReport={onGenerateReport}
         indexableDocuments={indexableDocuments}
         unindexableDocuments={unindexableDocuments}
         hasSelectedDocuments={selectedDocuments.size > 0}

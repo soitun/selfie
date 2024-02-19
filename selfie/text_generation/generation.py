@@ -14,6 +14,25 @@ logger = logging.getLogger(__name__)
 
 config = get_app_config()
 
+llm = None
+llm_model = None
+
+def get_llama_cpp_llm(model: str) -> LLM:
+    global llm, llm_model
+    if llm is None or llm_model != model:
+        logger.info(f"Creating new LLM instance for model {model or 'litellm default'}")
+        llm = LLM(
+            verbose=config.verbose,
+            path=model,
+            method='llama.cpp',
+            n_ctx=8192,
+            n_gpu_layers=-1 if config.gpu else 0,
+            # Special-case models whose embedded prompt templates do not work well
+            **({ 'chat_format': "mistrallite"} if "mistral" in model or "mixtral" in model else {})
+        )
+        llm_model = model
+    return llm
+
 async def completion(request: CompletionRequest | ChatCompletionRequest) -> SelfieCompletionResponse:
     logger.debug(f"Handling a completion request: {request}")
 
@@ -43,15 +62,7 @@ async def completion(request: CompletionRequest | ChatCompletionRequest) -> Self
     if method == "llama.cpp":
         model = request.model or config.local_model
         logger.info(f"Using model {model}")
-        llm = LLM(
-            verbose=config.verbose,
-            path=model,
-            method="llama.cpp",
-            n_ctx=8192,
-            n_gpu_layers=-1 if config.gpu else 0,
-            # Special-case models whose embedded prompt templates do not work well
-            **({ 'chat_format': "mistrallite"} if "mistral" in model or "mixtral" in model else {})
-        ).generator.llm
+        llm = get_llama_cpp_llm(model).generator.llm
 
         completion_fn = (llm.create_chat_completion if chat_mode else llm.create_completion)
 

@@ -180,13 +180,30 @@ const SelfieManager = () => {
   };
 
 
-  const handleIndexSelected = async (documentIds = Array.from(selectedDocuments), deleteInstead = false) => {
-    setRunningTaskMessage(`${ deleteInstead ? 'Unindexing' : 'Indexing' } documents...`);
-    setIsTaskPending(true);
-    console.log(`${deleteInstead ? 'Unindexing' : 'Indexing'} documents:`, documentIds);
+  const handleGenerateReport = async (reportName: string, strategy: string, prompt: string) =>
+    processSelected(undefined, 'Generating report', async (documents) => {
+      const response = await fetch(`${apiBaseUrl}/v1/documents/generate-report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          document_ids: documents,
+          name: reportName,
+          strategy,
+          prompt
+        })
+      });
 
-    try {
-      const response = await fetch(`${apiBaseUrl}/v1/documents/${ deleteInstead ? 'unindex' : 'index'}`, {
+      if (!response.ok) {
+        throw new Error(`Error: ${response.statusText}`);
+      }
+
+      return await response.json();
+    })
+
+
+  const handleIndexSelected = async (documentIds = Array.from(selectedDocuments), deleteInstead = false) =>
+    processSelected(documentIds, `${deleteInstead ? 'Unindexing' : 'Indexing'} documents`, async () => {
+      const response = await fetch(`${apiBaseUrl}/v1/documents/${deleteInstead ? 'unindex' : 'index'}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -200,13 +217,23 @@ const SelfieManager = () => {
       }
 
       const result = await response.json();
-      setCompletedTaskMessage(`${ deleteInstead ? 'Unindexing' : 'Indexing' } completed successfully.`);
-      // Update the list of documents to reflect the indexing status
+    })
+
+  const processSelected = async (documentIds = Array.from(selectedDocuments), taskMessage: string, task) => {
+    setRunningTaskMessage(taskMessage);
+    setIsTaskPending(true);
+
+    try {
+     const result = await task(Array.from(selectedDocuments).map((id: any) => id.toString()));
+
+      setCompletedTaskMessage(`${taskMessage} completed successfully.`);
+      // Update the list of documents to reflect any changed statuses
       await fetchDataSources();
+      return result;
     } catch (error) {
-      setCompletedTaskMessage(`Error occurred during ${ deleteInstead ? 'unindexing' : 'indexing' }.`);
+      setCompletedTaskMessage(`Error occurred for: ${taskMessage}.`);
       setIsTaskError(true);
-      console.error(`Error ${ deleteInstead ? 'un': '' }indexing documents:`, error);
+      console.error(`Error for: ${taskMessage}`, error);
     } finally {
       setRunningTaskMessage('');
       setIsTaskPending(false);
@@ -408,6 +435,7 @@ const SelfieManager = () => {
           onUnindexDocument={(doc) => handleIndexDocument(doc.id, true)}
           onIndexDocuments={() => handleIndexSelected()}
           onUnindexDocuments={() => handleIndexSelected(undefined, true)}
+          onGenerateReport={handleGenerateReport}
           stats={stats}
         />
       </div>
