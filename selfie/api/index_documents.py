@@ -12,17 +12,21 @@ from llama_index.core.node_parser.text import SentenceSplitter
 from datetime import datetime
 import importlib
 
+from selfie.utils import run_potentially_async_function
+
 router = APIRouter()
 
 
 @router.get("/index_documents")
 async def get_documents(offset: int = 0, limit: int = 10):
-    return await DataIndex("n/a").get_documents(offset=offset, limit=limit)
+    return await DataIndex().get_documents(offset=offset, limit=limit)
 
 
 @router.get("/index_documents/summary")
-async def get_index_documents_summary(topic: str, limit: Optional[int] = 5, min_score: Optional[float] = None):
-    result = await DataIndex("n/a").recall(topic, limit=limit, min_score=min_score)
+async def get_index_documents_summary(
+    topic: str, limit: Optional[int] = 5, min_score: Optional[float] = None
+):
+    result = await DataIndex().recall(topic, limit=limit, min_score=min_score)
     return {
         "summary": result["summary"],
         "score": result["mean_score"],
@@ -32,17 +36,17 @@ async def get_index_documents_summary(topic: str, limit: Optional[int] = 5, min_
 
 @router.post("/index_documents")
 async def create_index_document(document: Document):
-    return (await DataIndex("n/a").index([document]))[0]
+    return (await DataIndex().index([document]))[0]
 
 
 @router.get("/index_documents/{document_id}")
 async def get_index_document(document_id: int):
-    return await DataIndex("n/a").get_document(document_id)
+    return await DataIndex().get_document(document_id)
 
 
 @router.put("/index_documents/{document_id}")
 async def update_index_document(document_id: int, document: Document):
-    await DataIndex("n/a").update_document(document_id, document)
+    await DataIndex().update_document(document_id, document)
     return {"message": "Document updated successfully"}
 
 
@@ -50,13 +54,13 @@ async def update_index_document(document_id: int, document: Document):
 async def delete_index_document(document_id: int):
     # Sometimes self.embeddings.save() errors on "database is locked", bricks it
     # raise HTTPException(status_code=501, detail="Not implemented")
-    DataIndex("n/a").delete_document(document_id)
+    await DataIndex().delete_document(document_id)
     return {"message": "Document deleted successfully"}
 
 
 @router.delete("/index_documents")
 async def delete_index_documents():
-    DataIndex("n/a").delete_all()
+    DataIndex().delete_all()
     return {"message": "All documents deleted successfully"}
 
 
@@ -72,7 +76,9 @@ async def load_data(request: DataLoaderRequest):
 
     loader = loader_class(*request.constructor_args, **request.constructor_kwargs)
 
-    documents = loader.load_data(*request.load_data_args, **request.load_data_kwargs)
+    documents = await run_potentially_async_function(
+        loader.load_data, *request.load_data_args, **request.load_data_kwargs
+    )
 
     print(documents)
 
@@ -88,8 +94,7 @@ async def load_data(request: DataLoaderRequest):
         cur_text_chunks = text_parser.split_text(doc.text)
         text_chunks.extend(cur_text_chunks)
         doc_idxs.extend([doc_idx] * len(cur_text_chunks))
-
-    documents = []
+    new_documents = []
     for idx, text_chunk in enumerate(text_chunks):
         src_doc = documents[doc_idxs[idx]]
         document = Document(
@@ -103,9 +108,11 @@ async def load_data(request: DataLoaderRequest):
             else datetime.now(),
         )
 
-        documents.append(document)
+        new_documents.append(document)
 
-    return {"documents": await DataIndex("n/a").index(documents, extract_importance=False)}
+    return {
+        "documents": await DataIndex().index(new_documents, extract_importance=False)
+    }
 
 
 @router.post("/index_documents/chat-processor")

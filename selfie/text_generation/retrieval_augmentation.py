@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 # TODO: add a token budget for the augmentation
 async def augment(request: CompletionRequest | ChatCompletionRequest, completion):
     chat_mode = isinstance(request, ChatCompletionRequest)
-    data_index = DataIndex("n/a", completion=completion)
+    data_index = DataIndex(completion=completion)
 
     # Step 1: Retrieval
 

@@ -21,11 +21,15 @@ from selfie.embeddings import DataIndex
 from selfie.embeddings.document_types import Document
 
 import logging
+
+from selfie.utils import run_potentially_async_function
+
 logger = logging.getLogger(__name__)
 
 database_proxy = Proxy()
 
 config = get_app_config()
+
 
 class BaseModel(Model):
     class Meta:
@@ -91,7 +95,7 @@ class DataManager:
                 raise ValueError(f"No document found with ID {document_id}")
 
             if delete_indexed_data:
-                index = DataIndex("n/a")
+                index = DataIndex()
                 await index.delete_documents_with_source_documents([document.source_id])
 
             document.delete_instance()
@@ -102,8 +106,15 @@ class DataManager:
             raise ValueError(f"No data source found with ID {source_id}")
 
         if delete_indexed_data:
-            source_document_ids = [doc.id for doc in SelfieDocument.select().where(SelfieDocument.source == source_id)]
-            await DataIndex("n/a").delete_documents_with_source_documents(source_document_ids)
+            source_document_ids = [
+                doc.id
+                for doc in SelfieDocument.select().where(
+                    SelfieDocument.source == source_id
+                )
+            ]
+            await DataIndex().delete_documents_with_source_documents(
+                source_document_ids
+            )
 
         with self.db.atomic():
             if delete_documents:
@@ -111,7 +122,7 @@ class DataManager:
 
             DataSource.delete().where(DataSource.id == source_id).execute()
 
-    def scan_data_sources(self, source_ids: List[int]) -> Dict[str, Any]:
+    async def scan_data_sources(self, source_ids: List[int]) -> Dict[str, Any]:
         changes = {}
         for source_id in source_ids:
             data_source = DataSource.get_by_id(source_id)
@@ -120,7 +131,7 @@ class DataManager:
             if data_source.loader_module.startswith("selfie"):
                 data_source_config["load_data_kwargs"]["earliest_date"] = data_source.last_loaded_timestamp
 
-            documents = self._fetch_documents(
+            documents = await self._fetch_documents(
                 data_source.loader_module, data_source_config
             )
             for doc in documents:
@@ -130,14 +141,19 @@ class DataManager:
                 changes[document.id] = "Created" if created else "Updated"
         return changes
 
-    def _fetch_documents(self, loader_module: str, config: Dict[str, Any]) -> List[Any]:
+    async def _fetch_documents(
+        self, loader_module: str, config: Dict[str, Any]
+    ) -> List[Any]:
         module_name, class_name = loader_module.rsplit(".", 1)
         module = importlib.import_module(module_name)
         loader_class = getattr(module, class_name)
         loader = loader_class(
             *config["constructor_args"], **config["constructor_kwargs"]
         )
-        return loader.load_data(*config["load_data_args"], **config["load_data_kwargs"])
+
+        return await run_potentially_async_function(
+            loader.load_data, *config["load_data_args"], **config["load_data_kwargs"]
+        )
 
     def _get_unique_key(self, doc, unique_key_path: str):
         keys = unique_key_path.split(".")
@@ -153,16 +169,18 @@ class DataManager:
         print("Indexing documents")
 
         # Ensure that the data source is in the database
-        self.scan_data_sources([data_source.id])
+        await self.scan_data_sources([data_source.id])
 
         loader_module = data_source.loader_module
 
-        documents = self._fetch_documents(loader_module, json.loads(data_source.config))
+        documents = await self._fetch_documents(
+            loader_module, json.loads(data_source.config)
+        )
         documents = [
             document for doc in documents for document in self._map_selfie_documents_to_index_documents(selfie_document=doc)
         ]
 
-        await DataIndex("n/a").index(documents, extract_importance=False)
+        await DataIndex().index(documents, extract_importance=False)
 
         # TODO: record the last time this data source was indexed
 
@@ -179,7 +197,7 @@ class DataManager:
             logger.warning("No documents to index")
             return {"message": "No documents to index"}
 
-        return await DataIndex("n/a").index(index_documents, extract_importance=False)
+        return await DataIndex().index(index_documents, extract_importance=False)
 
     @staticmethod
     def _map_selfie_documents_to_index_documents(selfie_document: SelfieDocument):
@@ -231,12 +249,22 @@ class DataManager:
             documents = SelfieDocument.select()
             doc_ids = None
 
-        one_indexed_document_per_source = DataIndex("n/a").get_one_document_per_source_document(doc_ids)
-        indexed_documents = list(set([doc['source_document_id'] for doc in one_indexed_document_per_source]))
+        one_indexed_document_per_source = (
+            DataIndex().get_one_document_per_source_document(doc_ids)
+        )
+        indexed_documents = list(
+            set([doc["source_document_id"] for doc in one_indexed_document_per_source])
+        )
 
         return [
             # TODO: for some reason, initializing Embeddings in DataIndex with the SQLAlchemy driver returns indexed_documents as strings, not ints (requires str(doc.id)).
-            {"id": doc.id, "metadata": json.loads(doc.metadata), "is_indexed": doc.id in indexed_documents, "num_index_documents": DataIndex("n/a").get_document_count([str(doc.id)])} for doc in documents
+            {
+                "id": doc.id,
+                "metadata": json.loads(doc.metadata),
+                "is_indexed": doc.id in indexed_documents,
+                "num_index_documents": DataIndex().get_document_count([str(doc.id)]),
+            }
+            for doc in documents
         ]
 
     def get_document(self, document_id: str):

@@ -15,14 +15,14 @@ class UnindexDocumentsRequest(BaseModel):
 
 
 class IndexDocumentsRequest(BaseModel):
-    name: str
     is_chat: bool = False
     document_ids: List[str] = []
-    strategy: Optional[str] = 'accumulate'
 
 
 class GenerateReportRequest(BaseModel):
+    name: str
     prompt: str
+    strategy: Optional[str] = "accumulate"
     document_ids: Optional[List[str]] = None
 
 
@@ -39,7 +39,7 @@ async def delete_data_source(document_id: int, delete_indexed_data: bool = True)
 
 @router.post("/documents/unindex")
 async def unindex_documents(request: UnindexDocumentsRequest):
-    await DataIndex("n/a").delete_documents_with_source_documents(request.document_ids)
+    await DataIndex().delete_documents_with_source_documents(request.document_ids)
     return {"message": "Document unindexed successfully"}
 
 
@@ -55,18 +55,18 @@ async def index_documents(request: IndexDocumentsRequest):
     speaker_aliases = {}
 
     return [
-        await manager.index_document(manager.get_document(document_id),
-                                     lambda document: DataIndex.map_share_gpt_data(
-                                         parser.parse_document(
-                                             document.text,
-                                             None,
-                                             speaker_aliases,
-                                             False,
-                                             document.id
-                                         ).conversations,
-                                         document.source.name,
-                                         document.id
-                                     ) if is_chat else None)
+        await manager.index_document(
+            manager.get_document(document_id),
+            lambda document: DataIndex.map_share_gpt_data(
+                parser.parse_document(
+                    document.text, None, speaker_aliases, False, document.id
+                ).conversations,
+                document.source.name,
+                document.id,
+            )
+            if is_chat
+            else None,
+        )
         for document_id in document_ids
     ]
 

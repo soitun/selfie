@@ -43,7 +43,7 @@ async def delete_data_source(source_id: int, delete_documents: bool = True, dele
 
 @router.post("/data-sources/{source_id}/scan")
 async def scan_data_sources(source_id: int):
-    return DataManager().scan_data_sources([source_id])
+    return await DataManager().scan_data_sources([source_id])
 
 
 @router.post("/data-sources/{source_id}/index")

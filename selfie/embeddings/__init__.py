@@ -56,16 +56,11 @@ class DataIndex:
 
             async def completion_async(prompt):
                 req = ChatCompletionRequest(
-                    api_base="http://localhost:5000/v1",
-                    api_key="",
+                    # api_base="http://localhost:5000/v1",
+                    # api_key="",
                     max_tokens=512,
                     disable_augmentation=True,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
+                    messages=[{"role": "user", "content": prompt}],
                 )
                 return await generation.completion(req)
                 # return llm(prompt)
@@ -274,16 +269,18 @@ class DataIndex:
             filters: Dict[str, Any] = {},
     ) -> List[Dict[str, Any]]:
         parameters = parameters or {}
+        where = (where if isinstance(where, list) else [where]) if where else []
+
         query_components = [
             f"SELECT score, {', '.join(Document.model_fields.keys())} FROM txtai"
         ]
 
-        if self.filters:
-            where = ((where if isinstance(where, list) else [where])
-                     .extend([f'{k} = {v}' for k, v in {**self.filters, **filters}.items()]))
+        if self.filters or filters:
+            where.extend([f"{k} = :{k}" for k in {**self.filters, **filters}])
+            parameters.update({**self.filters, **filters})
 
         if where:
-            query_components.append(f"AND {' AND '.join(where)}")
+            query_components.append(f"WHERE {' AND '.join(where)}")
 
         if group_by:
             query_components.append(f"GROUP BY {group_by}")
@@ -295,8 +292,12 @@ class DataIndex:
             query_components.append("OFFSET :offset")
             parameters["offset"] = offset
 
-        logger.debug(f"Query looks like {' '.join(query_components)}")
-        return self.embeddings.search(" ".join(query_components), parameters=parameters, limit=limit)
+        logger.debug(
+            f"Query looks like {' '.join(query_components)} with parameters {parameters}"
+        )
+        return self.embeddings.search(
+            " ".join(query_components), parameters=parameters, limit=limit
+        )
 
     async def index(self, documents: List[Document], extract_importance=True, upsert=False):
         start_time = time.time()
@@ -328,9 +329,17 @@ class DataIndex:
 
         async def get_formatted_index_docs(source_doc_id=None, offset=0, limit=10):
             # TODO it seems like get_documents returns ordered by date descending??
-            index_docs = self.get_documents_with_source_document(source_doc_id) if source_doc_id else await self.get_documents(offset, limit)
-            return [self._format_index_documents([Document(**d)]) for d in index_docs if (earliest_date is None or d['created_timestamp'] >= earliest_date) and (latest_date is None or d['created_timestamp'] <= latest_date)]
-
+            index_docs = (
+                self.get_documents_with_source_document(source_doc_id)
+                if source_doc_id
+                else await self.get_documents(offset, limit)
+            )
+            return [
+                self._format_index_documents([Document(**d)])
+                for d in index_docs
+                if (earliest_date is None or d["created_timestamp"] >= earliest_date)
+                and (latest_date is None or d["created_timestamp"] <= latest_date)
+            ]
 
         async def complete(docs):
             results = []
@@ -395,7 +404,9 @@ class DataIndex:
             "similar(:topic)",
             *([f"id IN ({', '.join([str(doc_id) for doc_id in document_ids])})"] if document_ids else [])
         ]
-        results = self._query(where=where_clause, limit=limit)
+        results = self._query(
+            where=where_clause, parameters={"topic": topic}, limit=limit, offset=0
+        )
 
         documents_list: List[ScoredDocument] = []
         for result in results:
@@ -512,16 +523,20 @@ class DataIndex:
         # query = f"SELECT id, timestamp, text, importance, source, updated_timestamp, source_document_id FROM txtai WHERE source_document_id IS NOT NULL AND source_document_id IN ({', '.join(sources)}) GROUP BY source_document_id HAVING max(updated_timestamp) LIMIT 999999"
         # query = f"SELECT id, source_document_id FROM txtai {where_in_clause} GROUP BY source_document_id LIMIT 999999"
         # return self.embeddings.search(query)
-        return self._query(where=where_in_clause, group_by="source_document_id", limit=999999)
+        return self._query(
+            where=where_in_clause, group_by="source_document_id", limit=999999
+        )
 
     async def find_existing_document(self, document: Document):
         if not self.has_data():
             return None
         result = self._query(
-            where=["text = :text",
-                   "timestamp = :timestamp",
-                   "source = :source",
-                   "source_document_id = :source_document_id"],
+            where=[
+                "text = :text",
+                "timestamp = :timestamp",
+                "source = :source",
+                "source_document_id = :source_document_id",
+            ],
             parameters={
                 "text": document.text,
                 "timestamp": document.timestamp.isoformat(),
